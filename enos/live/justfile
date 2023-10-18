@@ -295,16 +295,16 @@ docker_campain user variation="valuation_rates" dotenvfile=".env": (build_requir
 dev:
     nix develop --extra-experimental-features nix-command --extra-experimental-features flakes
 
-sim filename="sim" nb_iter="1" $methods="" $pricing="" $RANDOM_SEED_INIT="" NB_FUNCTIONS_LOW_REQ_INTERVAL_LOW_LATENCY="5" NB_FUNCTIONS_HIGH_REQ_INTERVAL_LOW_LATENCY="5" NB_FUNCTIONS_LOW_REQ_INTERVAL_REST_LATENCY="100" NB_FUNCTIONS_HIGH_REQ_INTERVAL_REST_LATENCY="100" SIZE_MULTIPLIERS="1":
+sim filename="sim" nb_iter="1" $marketplace="second_price" $methods="" $pricing="" $RANDOM_SEED_INIT="" NB_FUNCTIONS_LOW_REQ_INTERVAL_LOW_LATENCY="5" NB_FUNCTIONS_HIGH_REQ_INTERVAL_LOW_LATENCY="5" NB_FUNCTIONS_LOW_REQ_INTERVAL_REST_LATENCY="100" NB_FUNCTIONS_HIGH_REQ_INTERVAL_REST_LATENCY="100" SIZE_MULTIPLIERS="1":
     #!/usr/bin/env bash
     export cities=()
     export pricing=${pricing:=$({{RUN}} simulator.py 2>/dev/null | sed -n 's/PRICING_STRATEGY not in \[\(.*\)\].*/\1/p')}
     export methods=${methods:=$({{RUN}} simulator.py 2>/dev/null | sed -n 's/PLACEMENT_STRATEGY not in \[\(.*\)\].*/\1/p')}
     export CSV_OUT_DIR=$(mktemp -d)
 
-    parallel SAVE_NETWORK_FILE=$CSV_OUT_DIR/{1}-{2}.net SIZE_MULTIPLIER={1} {{RUN}} definitions.py > /dev/null ::: {{SIZE_MULTIPLIERS}} ::: $(seq 1 {{nb_iter}})
+    parallel SAVE_NETWORK_FILE=$CSV_OUT_DIR/{1}-{2}.net SIZE_MULTIPLIER={1} {{RUN}} definitions.py ::: {{SIZE_MULTIPLIERS}} ::: $(seq 1 {{nb_iter}}) > net.log
 
-    time parallel --keep-order  \
+    time parallel --keep-order \
         --memsuspend 3G \
         JOB_INDEX={#} \
         NB_FUNCTIONS_LOW_REQ_INTERVAL_LOW_LATENCY={1} \
@@ -318,7 +318,8 @@ sim filename="sim" nb_iter="1" $methods="" $pricing="" $RANDOM_SEED_INIT="" NB_F
         ::: {{NB_FUNCTIONS_LOW_REQ_INTERVAL_REST_LATENCY}} \
         :::+ {{NB_FUNCTIONS_HIGH_REQ_INTERVAL_REST_LATENCY}} \
         ::: {{SIZE_MULTIPLIERS}} \
-        ::: $(seq 1 {{nb_iter}})
+        ::: $(seq 1 {{nb_iter}}) \
+        | tee sim.logs
 
     rm ./{{filename}}.data.csv || .
     touch ./{{filename}}.data.csv
@@ -346,11 +347,13 @@ _sim $LOAD_NETWORK_FILE:
     parallel --memsuspend 3G \
         PLACEMENT_STRATEGY={1} \
         PRICING_STRATEGY={2} \
+        MARKETPLACE_STRATEGY={3} \
         JOB_INDEX=$JOB_INDEX{#} \
         JOB_ID=$JOB_INDEX-{#} \
         {{RUN}} simulator.py \
         ::: $methods \
-        ::: $pricing 
+        ::: $pricing \
+        ::: $marketplace
     
     rm $EXPE_SAVE_FILE >&2
 

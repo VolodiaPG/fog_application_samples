@@ -265,6 +265,7 @@ class LinearPerPartPricing(Pricing):
             self.price,
             node.cores_used / node.cores,
             (node.cores_used + sla.core) / node.cores,
+            limit=150,
         )
         return Bid(price, node.name, accumulated_latency)
 
@@ -900,7 +901,36 @@ class FogNode(object):
         return ret
 
 
-class MarketPlace:
+class MarketPlaceFirstAuction:
+    def __init__(self, env, network: Dict[str, FogNode], monitoring: Monitoring):
+        self.env = env
+        self.network = network
+        self.monitoring = monitoring
+
+    def send(self, destination: str, request: Request):
+        ret = yield env.process(request(self.network[destination], ""))
+        return ret
+
+    def auction(self, first_node: str, sla: SLA, auction: Request):
+        bids: List[Bid] = yield self.env.process(self.send(first_node, auction))
+        if len(bids) == 0:
+            return
+
+        bids = sorted(bids, key=lambda x: x.bid)
+
+        winner = bids[0]
+        ret = yield self.env.process(
+            self.send(
+                winner.bidder,
+                ProvisionRequest(
+                    env, self.monitoring, sla, winner.bid, winner.acc_latency
+                ),
+            )
+        )
+        return ret
+
+
+class MarketPlaceSecondAuction:
     def __init__(self, env, network: Dict[str, FogNode], monitoring: Monitoring):
         self.env = env
         self.network = network
@@ -933,7 +963,9 @@ def submit_function(
     env, network, marketplace, function: expe.Function, mon: Monitoring, strat_type
 ):
     #  CPU is in millicpu
-    sla = SLA(function.mem, function.cpu / 1000, function.latency * MS, 800 * SECS)
+    sla = SLA(
+        function.mem, float(function.cpu) / 1000.0, function.latency * MS, 800 * SECS
+    )
     yield env.timeout(function.sleep_before_start * SECS)
     mon.total_submitted += 1
     yield env.process(
@@ -1164,15 +1196,22 @@ pricing_strategy, pricing_strategy_name = choose_from(
         ),
     },
 )
+marketplace_strategy, marketplace_strategy_name = choose_from(
+    "MARKETPLACE_STRATEGY",
+    {
+        "first_price": MarketPlaceFirstAuction,
+        "second_price": MarketPlaceSecondAuction,
+    },
+)
 
-if not pricing_strategy or not placement_strategy:
+if not pricing_strategy or not placement_strategy or not marketplace_strategy:
     exit(1)
 
 env = simpy.Environment()
 
 _first_node, network = init_network(env, latencies, NETWORK, pricing_strategy)
 
-marketplace = MarketPlace(env, network, monitoring)
+marketplace = marketplace_strategy(env, network, monitoring)
 
 nb_submitted_functions_low_latency = 0
 nb_submitted_functions_high_latency = 0
@@ -1270,6 +1309,7 @@ with open(f"{out_dir}/{JOB_INDEX}.data.csv", "w") as file:
                 "node",
                 "placement",
                 "pricing",
+                "marketplace",
                 "seed",
                 "level",
                 "earning",
@@ -1294,6 +1334,7 @@ with open(f"{out_dir}/{JOB_INDEX}.data.csv", "w") as file:
                     node,
                     placement_strategy_name,
                     pricing_strategy_name,
+                    marketplace_strategy_name,
                     seed,
                     level,
                     ee.bid,
